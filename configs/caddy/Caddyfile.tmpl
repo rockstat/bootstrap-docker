@@ -1,0 +1,14 @@
+(auth-headers) {
+    header_up +X-WEBAUTH-USER {http.auth.user.id}
+}
+
+https://${DOMAIN}:${CADDY_PORT} {
+    tls /cert1/cert.pem /cert1/key.pem
+    respond / "Hello World" 200
+
+    # htpasswd -nB user  (the bcrypt hash lives here, not in .env,
+    # because `$` breaks docker compose .env interpolation)
+    basic_auth /* bcrypt Private {
+        user $2y$05$kxv3drnXqLGSBtD4bbKfYewbmasOkv7Oli3ZOYrF6WNGa9pIGXc8.
+    }
+}

@@ -1,0 +1,5 @@
+.env
+generated/
+compose.front.yml
+data/
+etc/

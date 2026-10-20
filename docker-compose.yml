@@ -1,0 +1,373 @@
+# Rockstat platform — single host deployment.
+# Replaces the ansible playbook (../deploy.yml).
+#
+# Usage: see README.md; manage via ./deploy.sh (it also generates
+# compose.front.yml with the scaled front workers and generated/common.env).
+#
+# Core services run with no profile. Optional pieces are behind profiles:
+#   clickhouse (added automatically by deploy.sh when CLICKHOUSE_LOCAL=1),
+#   enrich (mmgeo, uap, uapc), ip2lgeo (needs a DB file in enrichers_dbs),
+#   kafkastream, telegraf, devtools (caddy, jupyter, grafana, ui)
+
+name: rockstat
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "10"
+
+x-defaults: &defaults
+  restart: unless-stopped
+  logging: *default-logging
+  extra_hosts:
+    - "host:${BIND_IP}"
+  networks:
+    - custom
+
+networks:
+  # created by `deploy.sh init` with fixed subnets and bridge names
+  custom:
+    name: ${DOCKER_NET_NAME:-custom}
+    external: true
+  dev:
+    name: ${DOCKER_DEV_NET_NAME:-dev}
+    external: true
+
+volumes:
+  grafana-storage:
+    name: grafana_grafana-storage
+
+services:
+
+  ##### ##### #####    Nginx (public entry) + Let's Encrypt    ##### ##### #####
+
+  nginx:
+    <<: *defaults
+    container_name: nginx
+    hostname: nginx
+    image: ${IMAGE_NGINX}
+    mem_limit: 1g
+    # reload every 6h so renewed certificates get picked up
+    command: ["/bin/sh", "-c", "while :; do sleep 6h & wait $$!; nginx -s reload; done & exec nginx -g 'daemon off;'"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${DATA_DIR}/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ${DATA_DIR}/nginx/includes:/etc/nginx/includes:ro
+      - ${DATA_DIR}/public:/srv/public:ro
+      - ${DATA_DIR}/certbot/conf:/etc/letsencrypt:ro
+      - ${DATA_DIR}/certbot/www:/var/www/certbot:ro
+
+  certbot:
+    container_name: certbot
+    image: ${IMAGE_CERTBOT}
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - custom
+    # check for renewal twice a day; nginx reloads itself periodically
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $$!; done"]
+    volumes:
+      - ${DATA_DIR}/certbot/conf:/etc/letsencrypt
+      - ${DATA_DIR}/certbot/www:/var/www/certbot
+
+  ##### ##### #####    ClickHouse    ##### ##### #####
+
+  clickhouse:
+    <<: *defaults
+    # enabled by deploy.sh (--profile clickhouse) when CLICKHOUSE_LOCAL=1
+    profiles: ["clickhouse"]
+    container_name: clickhouse
+    hostname: clickhouse
+    image: ${IMAGE_CLICKHOUSE}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    mem_limit: ${MEM_LIMIT_CLICKHOUSE:-32g}
+    cpus: ${CPUS_CLICKHOUSE:-4}
+    ports:
+      - "${BIND_IP}:8123:8123"
+      - "${BIND_IP}:9000:9000"
+    volumes:
+      - ${CLICKHOUSE_DATA_DIR}:/var/lib/clickhouse
+      - ${DATA_DIR}/clickhouse_config/001_server.xml:/etc/clickhouse-server/config.d/server.xml
+      - ${DATA_DIR}/clickhouse_config/002_users.xml:/etc/clickhouse-server/users.d/readonly.xml
+      - ${DATA_DIR}/clickhouse_config/003_drop_limits.xml:/etc/clickhouse-server/config.d/drop_limits.xml
+      - ${DATA_DIR}/clickhouse_scripts:/docker-entrypoint-initdb.d
+      - ${CLICKHOUSE_LOG_DIR}:/var/log/clickhouse-server
+      - ${CLICKHOUSE_TMP_DIR}:/var/lib/clickhouse/tmp
+
+  chproxy:
+    <<: *defaults
+    container_name: chproxy
+    hostname: chproxy
+    image: ${IMAGE_CHPROXY}
+    labels:
+      inband: system
+    command: -config /config.yml
+    mem_limit: 1g
+    ports:
+      # public https endpoint
+      - "8443:9090"
+    volumes:
+      - ${ETC_DIR}/chproxy.yml:/config.yml:ro
+      - ${SSL_CERT}:/cert.pem
+      - ${SSL_CERT_KEY}:/key.pem
+
+  ##### ##### #####    Redis    ##### ##### #####
+
+  redis:
+    <<: *defaults
+    container_name: redis
+    hostname: redis
+    image: ${IMAGE_REDIS}
+    mem_limit: ${MEM_LIMIT_REDIS:-5g}
+    ports:
+      - "${BIND_IP}:6379:6379"
+    volumes:
+      - ${REDIS_DATA_DIR}:/data
+
+  ##### ##### #####    ChWriter    ##### ##### #####
+
+  chwriter:
+    <<: *defaults
+    container_name: chwriter
+    hostname: chwriter
+    image: ${IMAGE_CHWRITER}
+    labels:
+      inband: system
+    env_file:
+      - generated/common.env
+    environment:
+      # writes straight to clickhouse (local or external), bypassing chproxy
+      CH_DSN: http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT:-8123}/${CLICKHOUSE_DB}
+      WORKER_ID: "1"
+    mem_limit: 1g
+    volumes:
+      - ${DATA_DIR}/chwriter_custom_config:/app/config/custom
+      - ${DATA_DIR}/chwriter_custom_migrations:/app/migrations/custom
+      - ${DATA_DIR}/chwriter_emergency:/app/emergency
+
+  ##### ##### #####    Kafka Stream    ##### ##### #####
+
+  kafkastream:
+    <<: *defaults
+    profiles: ["kafkastream"]
+    container_name: kafkastream
+    hostname: kafkastream
+    image: ${IMAGE_KAFKASTREAM}
+    labels:
+      inband: system
+    env_file:
+      - generated/common.env
+    mem_limit: 4g
+    volumes:
+      - ${DATA_DIR}/kafkastream_custom_config:/app/kafkastream/config/custom
+
+  ##### ##### #####    Telegraf    ##### ##### #####
+
+  telegraf:
+    <<: *defaults
+    profiles: ["telegraf"]
+    container_name: telegraf
+    hostname: telegraf
+    image: ${IMAGE_TELEGRAF}
+    privileged: true
+    mem_limit: 512m
+    ports:
+      - "${BIND_IP}:8125:8125/udp"
+    environment:
+      HOST_PROC: /hostfs/proc
+      HOST_SYS: /hostfs/sys
+      HOST_RUN: /hostfs/run
+      HOST_VAR: /hostfs/var
+      HOST_ETC: /hostfs/etc
+      HOST_MOUNT_PREFIX: /hostfs
+    volumes:
+      - ${DATA_DIR}/telegraf_config/telegraf.conf:/etc/telegraf/telegraf.conf
+      - /:/hostfs:ro
+      - /run/udev:/run/udev:ro
+
+  ##### ##### #####    Enrichers    ##### ##### #####
+
+  mmgeo:
+    <<: *defaults
+    profiles: ["enrich", "mmgeo"]
+    container_name: mmgeo
+    hostname: mmgeo
+    image: ${IMAGE_MMGEO}
+    mem_limit: 1g
+    environment:
+      SERVICE_GROUP: mmgeo
+    volumes:
+      - ${DATA_DIR}/uploads:/app/uploads
+      - ${DATA_DIR}/enrichers_dbs:/app/data
+
+  # optional: requires an IP2Location DB file in ${DATA_DIR}/enrichers_dbs
+  ip2lgeo:
+    <<: *defaults
+    profiles: ["ip2lgeo"]
+    container_name: ip2lgeo
+    hostname: ip2lgeo
+    image: ${IMAGE_MMGEO}
+    mem_limit: 1g
+    env_file:
+      - generated/common.env
+    environment:
+      SERVICE_GROUP: ip2lgeo
+    volumes:
+      - ${DATA_DIR}/uploads:/app/uploads
+      - ${DATA_DIR}/enrichers_dbs:/app/data
+
+  uap:
+    <<: *defaults
+    profiles: ["enrich", "uap"]
+    container_name: uap
+    hostname: uap
+    image: ${IMAGE_MMGEO}
+    mem_limit: 1g
+    env_file:
+      - generated/common.env
+    environment:
+      SERVICE_GROUP: uap
+    volumes:
+      - ${DATA_DIR}/uploads:/app/uploads
+      - ${DATA_DIR}/enrichers_dbs:/app/data
+
+  uapc:
+    <<: *defaults
+    profiles: ["enrich", "uapc"]
+    container_name: uapc
+    hostname: uapc
+    image: ${IMAGE_MMGEO}
+    mem_limit: 1g
+    env_file:
+      - generated/common.env
+    environment:
+      SERVICE_GROUP: uapc
+    volumes:
+      - ${DATA_DIR}/uploads:/app/uploads
+      - ${DATA_DIR}/enrichers_dbs:/app/data
+
+  ##### ##### #####    Devtools    ##### ##### #####
+
+  caddy:
+    <<: *defaults
+    profiles: ["devtools", "caddy"]
+    container_name: caddy
+    hostname: caddy
+    image: ${IMAGE_CADDY}
+    networks:
+      - dev
+    mem_limit: 1g
+    environment:
+      CADDY_DOCKER_CADDYFILE_PATH: /Caddyfile
+      CADDY_DOCKER_LABEL_PREFIX: caddy2
+      CADDY_INGRESS_NETWORKS: ${DOCKER_DEV_NET_NAME:-dev}
+    ports:
+      - "${CADDY_PORT:-2083}:${CADDY_PORT:-2083}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DATA_DIR}/caddy_home/Caddyfile:/Caddyfile
+      - ${DATA_DIR}/caddy_home/data:/data
+      - ${SSL_CERT}:/cert1/cert.pem
+      - ${SSL_CERT_KEY}:/cert1/key.pem
+
+  jupyter:
+    <<: *defaults
+    profiles: ["devtools", "jupyter"]
+    container_name: jupyter
+    hostname: jupyter
+    image: ${IMAGE_JUPYTER}
+    networks:
+      - dev
+    working_dir: /home/user
+    user: root
+    mem_limit: 5g
+    environment:
+      NOTEBOOK_ARGS: "--port=8888 --no-browser --ip=0.0.0.0 --ServerApp.base_url=/jupyter --LabApp.token=''"
+      NB_UID: ${PUID}
+      NB_GID: ${PGID}
+      NB_USER: user
+      CHOWN_HOME_OPTS: "-R"
+      CHOWN_HOME: "yes"
+    labels:
+      caddy2: "https://${DOMAIN}:${CADDY_PORT:-2083}"
+      caddy2.@ws.0_header: Connection *Upgrade*
+      caddy2.@ws.1_header: Upgrade websocket
+      caddy2.0_reverse_proxy: "/jupyter {{ upstreams http 8888 }}"
+      caddy2.1_reverse_proxy: "/jupyter/* {{ upstreams http 8888 }}"
+      caddy2.2_reverse_proxy: "/jupyter/@ws {{ upstreams http 8888 }}"
+    ports:
+      - "${BIND_IP}:8888:8888"
+    volumes:
+      - ${DATA_DIR}/jupyter_home/data:/home/user/work
+      - ${DATA_DIR}/chwriter_emergency:/home/user/chwriter_emergency
+
+  grafana:
+    <<: *defaults
+    profiles: ["devtools", "grafana"]
+    container_name: grafana
+    hostname: grafana
+    image: ${IMAGE_GRAFANA}
+    networks:
+      - dev
+    mem_limit: 1g
+    environment:
+      GF_INSTALL_PLUGINS: "grafana-clock-panel,grafana-clickhouse-datasource"
+      GF_SERVER_ROOT_URL: "https://${DOMAIN}:${CADDY_PORT:-2083}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: "X-WEBAUTH-USER"
+      GF_AUTH_PROXY_HEADER_PROPERTY: "username"
+      GF_AUTH_PROXY_AUTI_SIGN_UP: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_DISABLE_LOGOUT_MENU: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      # must match the caddy basic_auth login (forwarded via X-WEBAUTH-USER)
+      GF_SECURITY_ADMIN_USER: user
+      CHOWN_HOME: "yes"
+    labels:
+      caddy2: "https://${DOMAIN}:${CADDY_PORT:-2083}"
+      caddy2.0_reverse_proxy: "/grafana {{ upstreams http 3000 }}"
+      caddy2.1_reverse_proxy: "/grafana/* {{ upstreams http 3000 }}"
+      caddy2.1_reverse_proxy.import: auth-headers
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+  ui:
+    <<: *defaults
+    profiles: ["devtools", "ui"]
+    container_name: ui
+    hostname: ui
+    image: ${IMAGE_UI}
+    # dev: reachable by caddy; custom: reaches clickhouse directly
+    networks:
+      - dev
+      - custom
+    mem_limit: 1g
+    environment:
+      CLICKHOUSE_URL: "http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT:-8123}"
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: stats_ui
+      CLICKHOUSE_RAW_DB: ${CLICKHOUSE_DB}
+      # caddy basicauth protects /ui and forwards the user via auth-headers
+      UI_TRUST_AUTH_HEADER: x-webauth-user
+      UI_PASSWORD: ${UI_PASSWORD:-}
+      UI_SECRET: ${UI_SECRET:-}
+      PROJECTS: ${UI_PROJECTS:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-deepseek-chat}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.deepseek.com}
+    labels:
+      caddy2: "https://${DOMAIN}:${CADDY_PORT:-2083}"
+      caddy2.0_reverse_proxy: "/ui {{ upstreams http 3000 }}"
+      caddy2.1_reverse_proxy: "/ui/* {{ upstreams http 3000 }}"
+      caddy2.1_reverse_proxy.import: auth-headers

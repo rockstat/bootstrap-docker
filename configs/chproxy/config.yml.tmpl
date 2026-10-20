@@ -1,0 +1,37 @@
+---
+server:
+  https:
+    listen_addr: ":9090"
+    cert_file: /cert.pem
+    key_file: /key.pem
+
+# Extra proxy users can be added here by hand — the file is rendered
+# to ${ETC_DIR}/chproxy.yml by deploy.sh (envsubst), edit the template.
+users:
+  - name: "readonly"
+    password: "${CLICKHOUSE_RO_PASSWORD}"
+    allow_cors: true
+    to_cluster: "local"
+    to_user: "readonly"
+    max_queue_time: "30s"
+    max_execution_time: "30s"
+    max_concurrent_queries: 3
+    max_queue_size: 100
+  - name: "default"
+    password: "${CLICKHOUSE_PASSWORD}"
+    allow_cors: true
+    to_cluster: "local"
+    to_user: "default"
+    max_queue_time: "30s"
+    max_execution_time: "30s"
+    max_concurrent_queries: 3
+    max_queue_size: 100
+
+# by default each cluster has `default` user which can be overridden by section `users`
+clusters:
+  - name: "local"
+    nodes:
+      - "${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}"
+    users:
+      - { name: "readonly", password: "${CLICKHOUSE_RO_PASSWORD}" }
+      - { name: "default", password: "${CLICKHOUSE_PASSWORD}" }
