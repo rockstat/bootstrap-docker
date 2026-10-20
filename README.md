@@ -49,7 +49,7 @@ cp .env.example .env    # и отредактировать под хост
 | `init` | каталоги с chown, docker-сети `custom`/`dev`, рендер конфигов, `generated/common.env`, `compose.front.yml` |
 | `render` | только перерендерить конфиги и перегенерировать front-файлы |
 | `gen-front` | только перегенерировать front-воркеры и nginx upstream (после смены `FRONT_SCALE`) |
-| `cert-init` | первичное получение сертификата: временный self-signed → nginx → ACME webroot → reload. При неудаче восстанавливает временный сертификат. Повторный запуск с существующим сертификатом просто поднимает nginx+certbot |
+| `cert-init` | первичное получение сертификата certbot'ом в standalone-режиме на :80 (nginx ещё не нужен), затем старт nginx+certbot. Повторный запуск с существующим сертификатом просто поднимает nginx+certbot |
 | `up [args]` | `docker compose up -d --pull always` + любые аргументы compose (`--profile`, имена сервисов) |
 | `create-db` | ждёт ClickHouse (локальный или внешний — по `CLICKHOUSE_HOST`) и создаёт базы `$CLICKHOUSE_DB` и `stats_ui` (служебная база сервиса ui) |
 | `compose <args>` | сырой `docker compose` с обоими файлами |
@@ -207,8 +207,8 @@ env-файлы. Пароли скрипт не генерирует — зада
 
 | Сервис | Порты | Что это |
 |---|---|---|
-| nginx | 0.0.0.0:80, 443 | публичный вход, балансировка на front |
-| certbot | — | автопродление сертификата (каждые 12ч) |
+| nginx | 0.0.0.0:443 | публичный вход (только HTTPS), балансировка на front |
+| certbot | 0.0.0.0:80 | выпуск/автопродление сертификата (standalone ACME; слушает 80 только в момент выпуска) |
 | front_1..N | BIND_IP:10003, 10005, … | приём событий |
 | chwriter | — | запись событий в ClickHouse |
 | chproxy | 0.0.0.0:8443 | публичный https-доступ к ClickHouse (локальному или внешнему) |
@@ -250,16 +250,18 @@ Devtools доступны через caddy: `https://<домен>:2083/grafana/`
 
 ## Nginx и SSL
 
-`nginx` — публичная точка входа (80/443): `location /` балансируется на все
-`front_N` (`least_conn`, генерируемый `upstream_front.conf`),
-`/public/` → `$DATA_DIR/public`, HTTP → 301 на HTTPS.
+`nginx` — публичная точка входа, **только HTTPS (443)**: `location /`
+балансируется на все `front_N` (`least_conn`, генерируемый
+`upstream_front.conf`), `/public/` → `$DATA_DIR/public`.
 Host-специфичные сниппеты (списки `set_real_ip_from` для Cloudflare и т.п.)
 кладутся в `configs/nginx/includes/*.conf` и попадают в `location /`.
+Порт 80 nginx не занимает — он закреплён за certbot, поэтому
+`http://домен` не отвечает и редиректа на https нет (осознанное решение).
 
-Сертификат: `./deploy.sh cert-init` поднимает nginx с временным self-signed
-сертификатом, проходит webroot-челлендж и перезагружает nginx. Дальше
-контейнер `certbot` продлевает сертификат сам (проверка каждые 12ч), nginx
-перечитывает его периодическим reload (каждые 6ч). Для теста:
+Сертификат: `./deploy.sh cert-init` получает его certbot'ом в standalone-режиме
+(certbot сам поднимает листенер на :80), после чего стартуют nginx и certbot.
+Дальше контейнер `certbot` продлевает сертификат сам (проверка каждые 12ч),
+nginx перечитывает его периодическим reload (каждые 6ч). Для теста:
 `LETSENCRYPT_STAGING=1`.
 
 ⚠️ chproxy и caddy монтируют файл сертификата напрямую и после продления
@@ -295,8 +297,10 @@ Host-специфичные сниппеты (списки `set_real_ip_from` д
 
 ## Типичные проблемы
 
-- **`cert-init` падает "Connection refused"** — DNS домена не указывает на
-  хост или занят порт 80. `preflight` предупреждает об обоих случаях.
+- **`cert-init` падает** — DNS домена не указывает на хост (`preflight`
+  предупреждает), порт 80 занят другим процессом или закрыт фаерволом,
+  либо `EMAIL` невалидный (адреса на `example.com` Let's Encrypt отклоняет —
+  preflight проверяет).
 - **nginx в restart-loop "cannot load certificate"** — нет сертификата
   (не запускался `cert-init`). Запустить `./deploy.sh cert-init`.
 - **ClickHouse убивается OOM** — `MEM_LIMIT_CLICKHOUSE` больше, чем есть

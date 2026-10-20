@@ -51,14 +51,12 @@ services:
     # reload every 6h so renewed certificates get picked up
     command: ["/bin/sh", "-c", "while :; do sleep 6h & wait $$!; nginx -s reload; done & exec nginx -g 'daemon off;'"]
     ports:
-      - "80:80"
       - "443:443"
     volumes:
       - ${DATA_DIR}/nginx/conf.d:/etc/nginx/conf.d:ro
       - ${DATA_DIR}/nginx/includes:/etc/nginx/includes:ro
       - ${DATA_DIR}/public:/srv/public:ro
       - ${DATA_DIR}/certbot/conf:/etc/letsencrypt:ro
-      - ${DATA_DIR}/certbot/www:/var/www/certbot:ro
 
   certbot:
     container_name: certbot
@@ -67,11 +65,13 @@ services:
     logging: *default-logging
     networks:
       - custom
+    # owns port 80: standalone ACME, listens only while issuing/renewing
+    ports:
+      - "80:80"
     # check for renewal twice a day; nginx reloads itself periodically
-    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $$!; done"]
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew; sleep 12h & wait $$!; done"]
     volumes:
       - ${DATA_DIR}/certbot/conf:/etc/letsencrypt
-      - ${DATA_DIR}/certbot/www:/var/www/certbot
 
   ##### ##### #####    ClickHouse    ##### ##### #####
 

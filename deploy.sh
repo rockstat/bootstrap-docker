@@ -97,6 +97,8 @@ preflight() {
   done
   [[ "${DOMAIN:-}" != "example.com" ]] \
     || { echo " [x] DOMAIN is still example.com — edit .env"; fail=1; }
+  [[ "${EMAIL:-}" != *@example.com ]] \
+    || { echo " [x] EMAIL is on example.com — Let's Encrypt rejects it, set a real address"; fail=1; }
   if ! ch_local && [[ "${CLICKHOUSE_HOST:-}" == "${BIND_IP:-}" ]]; then
     echo " [!] CLICKHOUSE_LOCAL=0, but CLICKHOUSE_HOST still points to BIND_IP — set the external server address"
   fi
@@ -156,7 +158,7 @@ init_dirs() {
     "$DATA_DIR/jupyter_home/data" "$DATA_DIR/grafana/data"
     "$DATA_DIR/telegraf_config"
     "$DATA_DIR/nginx/conf.d" "$DATA_DIR/nginx/includes"
-    "$DATA_DIR/certbot/conf" "$DATA_DIR/certbot/www"
+    "$DATA_DIR/certbot/conf"
     "$REDIS_DATA_DIR"
   )
   if ch_local; then
@@ -299,31 +301,9 @@ EOF
   } > "$DATA_DIR/nginx/conf.d/upstream_front.conf"
 }
 
-make_dummy_cert() { # temporary self-signed cert so nginx can start
-  local conf
-  conf=$(abs_path "$DATA_DIR/certbot/conf") # docker run -v needs an absolute path
-  mkdir -p "$conf/live/$DOMAIN"
-  docker run --rm -v "$conf:/etc/letsencrypt" \
-    --entrypoint sh "$IMAGE_CERTBOT" -c \
-    "openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
-      -keyout '/etc/letsencrypt/live/$DOMAIN/privkey.pem' \
-      -out '/etc/letsencrypt/live/$DOMAIN/fullchain.pem' \
-      -subj '/CN=$DOMAIN'" >/dev/null 2>&1
-}
-
-wait_nginx_http() {
-  echo "==> Waiting for nginx to serve on :80"
-  local i
-  for i in $(seq 1 30); do
-    if curl -so /dev/null --max-time 3 http://localhost/; then return 0; fi
-    sleep 2
-  done
-  return 1
-}
-
 cert_init() {
   local live="$DATA_DIR/certbot/conf/live/$DOMAIN"
-  mkdir -p "$DATA_DIR/certbot/conf" "$DATA_DIR/certbot/www"
+  mkdir -p "$DATA_DIR/certbot/conf"
 
   if [[ -e "$live/fullchain.pem" ]] && \
      [[ -e "$DATA_DIR/certbot/conf/renewal/$DOMAIN.conf" ]]; then
@@ -332,33 +312,20 @@ cert_init() {
     return
   fi
 
-  echo "==> Creating temporary self-signed cert so nginx can start"
-  make_dummy_cert
-
-  compose up -d nginx
-  if ! wait_nginx_http; then
-    echo "nginx is not serving on :80, aborting (logs below)" >&2
-    docker logs nginx --tail 20 >&2 || true
-    exit 1
-  fi
-
-  echo "==> Requesting Let's Encrypt certificate for $DOMAIN"
-  # nginx keeps the dummy cert in memory, so removing it here is safe
-  rm -rf "$live" "$DATA_DIR/certbot/conf/archive/$DOMAIN" \
-    "$DATA_DIR/certbot/conf/renewal/$DOMAIN.conf"
+  # standalone ACME: certbot binds host port 80 itself (nginx uses only 443),
+  # so the certificate is obtained before anything else starts
+  echo "==> Requesting Let's Encrypt certificate for $DOMAIN (standalone on :80)"
   local staging=()
   [[ "${LETSENCRYPT_STAGING:-0}" == "1" ]] && staging=(--staging)
-  if ! compose run --rm --entrypoint certbot certbot certonly \
-      --webroot -w /var/www/certbot "${staging[@]}" \
+  if ! compose run --rm --service-ports --entrypoint certbot certbot certonly \
+      --non-interactive --standalone "${staging[@]}" \
       -d "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email \
       --rsa-key-size 4096; then
-    echo "==> certbot failed; restoring temporary cert so nginx survives restarts" >&2
-    make_dummy_cert
+    echo "==> certbot failed; check that port 80 is free and reachable from the internet" >&2
     exit 1
   fi
 
-  compose exec nginx nginx -s reload
-  compose up -d certbot
+  compose up -d nginx certbot
   echo "==> Done: certificate obtained, auto-renewal is handled by the certbot container"
 }
 
