@@ -121,9 +121,11 @@ cp .env.example .env    # и отредактировать под хост
 | `MEM_LIMIT_REDIS` | 5g | лимит памяти Redis |
 
 При `CLICKHOUSE_LOCAL=0` укажите внешние `CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`
-и креды — chproxy продолжит проксировать на внешний сервер, `create-db`
-создаст базу там же. Preflight предупредит, если при `CLICKHOUSE_LOCAL=0`
-`CLICKHOUSE_HOST` всё ещё равен `BIND_IP`.
+и креды. Локальные clickhouse **и chproxy** в этом режиме не разворачиваются:
+сервисы ходят во внешний CH напрямую (`CH_DSN` в `generated/common.env`
+собирается без chproxy), `create-db` создаёт базы на внешнем сервере.
+Preflight предупредит, если при `CLICKHOUSE_LOCAL=0` `CLICKHOUSE_HOST`
+всё ещё равен `BIND_IP`.
 
 ### Front
 
@@ -211,9 +213,9 @@ env-файлы. Пароли скрипт не генерирует — зада
 | certbot | 0.0.0.0:80 | выпуск/автопродление сертификата (standalone ACME; слушает 80 только в момент выпуска) |
 | front_1..N | BIND_IP:10003, 10005, … | приём событий |
 | chwriter | — | запись событий в ClickHouse |
-| chproxy | 0.0.0.0:8443 | публичный https-доступ к ClickHouse (локальному или внешнему) |
 | redis | BIND_IP:6379 | шина/кэш |
-| clickhouse | BIND_IP:8123 (http), 9000 (tcp) | хранилище; запускается только при `CLICKHOUSE_LOCAL=1` (профиль `clickhouse` добавляется скриптом автоматически) |
+| clickhouse | BIND_IP:8123 (http), 9000 (tcp) | хранилище; только при `CLICKHOUSE_LOCAL=1` (профиль `clickhouse` добавляется скриптом автоматически) |
+| chproxy | 0.0.0.0:8443 | публичный https-доступ к локальному ClickHouse; разворачивается вместе с ним (тот же профиль `clickhouse`), при внешнем CH не нужен |
 
 Дополнительные сервисы — через профили (бывшие ansible-теги):
 

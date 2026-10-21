@@ -5,9 +5,10 @@
 # compose.front.yml with the scaled front workers and generated/common.env).
 #
 # Core services run with no profile. Optional pieces are behind profiles:
-#   clickhouse (added automatically by deploy.sh when CLICKHOUSE_LOCAL=1),
-#   enrich (mmgeo, uap, uapc), ip2lgeo (needs a DB file in enrichers_dbs),
-#   kafkastream, telegraf, devtools (caddy, jupyter, grafana, ui)
+#   clickhouse = local clickhouse + chproxy (added automatically by deploy.sh
+#   when CLICKHOUSE_LOCAL=1), enrich (mmgeo, uap, uapc), ip2lgeo (needs a DB
+#   file in enrichers_dbs), kafkastream, telegraf,
+#   devtools (caddy, jupyter, grafana, ui)
 
 name: rockstat
 
@@ -105,6 +106,9 @@ services:
 
   chproxy:
     <<: *defaults
+    # public https facade for the LOCAL clickhouse; with an external
+    # ClickHouse (CLICKHOUSE_LOCAL=0) it is not deployed
+    profiles: ["clickhouse"]
     container_name: chproxy
     hostname: chproxy
     image: ${IMAGE_CHPROXY}

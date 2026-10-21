@@ -22,8 +22,10 @@ git-репозиторий внутри него).
   `WORKER_ID` и порт `BIND_IP:(FRONT_PORT_BASE + 2*i)` — compose-репликами
   это не сделать. Смена `FRONT_SCALE` → `gen-front` → `up` → reload nginx.
 - **ClickHouse опционален**: `CLICKHOUSE_LOCAL=1` — deploy.sh сам добавляет
-  `--profile clickhouse` во все compose-команды; `0` — внешний сервер через
-  `CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`. `create-db` создаёт
+  `--profile clickhouse` во все compose-команды (профиль включает clickhouse
+  **и chproxy**); `0` — внешний сервер через `CLICKHOUSE_HOST`/
+  `CLICKHOUSE_HTTP_PORT`, chproxy не разворачивается, а `CH_DSN` в
+  common.env собирается напрямую на внешний CH. `create-db` создаёт
   `$CLICKHOUSE_DB` **и** `stats_ui` (служебная база сервиса ui).
 - **SSL**: nginx+certbot, вход через `cert-init` (временный self-signed →
   webroot ACME → reload; при ошибке dummy восстанавливается). chproxy и caddy

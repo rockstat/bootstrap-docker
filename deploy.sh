@@ -202,9 +202,9 @@ render_configs() {
     cp configs/clickhouse/001_server.xml configs/clickhouse/003_drop_limits.xml "$DATA_DIR/clickhouse_config/"
     render_tmpl configs/clickhouse/002_users.xml.tmpl "$DATA_DIR/clickhouse_config/002_users.xml" \
       '${CLICKHOUSE_PASSWORD} ${CLICKHOUSE_RO_PASSWORD}'
+    render_tmpl configs/chproxy/config.yml.tmpl "$ETC_DIR/chproxy.yml" \
+      '${CLICKHOUSE_PASSWORD} ${CLICKHOUSE_RO_PASSWORD} ${CLICKHOUSE_HOST} ${CLICKHOUSE_HTTP_PORT}'
   fi
-  render_tmpl configs/chproxy/config.yml.tmpl "$ETC_DIR/chproxy.yml" \
-    '${CLICKHOUSE_PASSWORD} ${CLICKHOUSE_RO_PASSWORD} ${CLICKHOUSE_HOST} ${CLICKHOUSE_HTTP_PORT}'
   render_tmpl configs/telegraf/telegraf.conf.tmpl "$DATA_DIR/telegraf_config/telegraf.conf" \
     '${DOMAIN} ${INFLUXDB_URL} ${INFLUXDB_TOKEN} ${INFLUXDB_ORG} ${INFLUXDB_BUCKET}'
   render_tmpl configs/caddy/Caddyfile.tmpl "$DATA_DIR/caddy_home/Caddyfile" \
@@ -221,6 +221,14 @@ render_configs() {
   cp -f custom/kafkastream/*.yml    "$DATA_DIR/kafkastream_custom_config/"     2>/dev/null || true
 
   echo "==> Writing generated/common.env"
+  # with a local clickhouse the services write through chproxy (CH_DSN);
+  # with an external one chproxy is not deployed, so point them directly
+  local chp_dsn
+  if ch_local; then
+    chp_dsn="http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${BIND_IP}:8443/${CLICKHOUSE_DB}"
+  else
+    chp_dsn="http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT:-8123}/${CLICKHOUSE_DB}"
+  fi
   cat > generated/common.env <<EOF
 JSON_LOGS=1
 LOG_LEVEL=${LOG_LEVEL:-info}
@@ -232,8 +240,8 @@ REDIS_DSN=redis://redis:6379
 FULLNAME=${FULLNAME}
 EMAIL=${EMAIL}
 UPLOADS_DIR=$(abs_path "$DATA_DIR/uploads")
-CH_DSN=http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${BIND_IP}:8443/${CLICKHOUSE_DB}
-CHP_DSN=http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${BIND_IP}:8443/${CLICKHOUSE_DB}
+CH_DSN=${chp_dsn}
+CHP_DSN=${chp_dsn}
 CHS_DSN=http://${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}@${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT:-8123}/${CLICKHOUSE_DB}
 TZ=${TZ:-UTC}
 KAFKA_BROKERS=${KAFKA_BROKERS:-}
