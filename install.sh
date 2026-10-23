@@ -88,7 +88,10 @@ else
     ask MEM_LIMIT_CLICKHOUSE "ClickHouse memory limit" 6g
   fi
   ask CPUS_CLICKHOUSE "ClickHouse CPU limit" "$(nproc 2>/dev/null || echo 4)"
-  note "passwords are generated and saved to .env (default / readonly)"
+  # generated passwords are shown as defaults — press Enter to accept
+  # or type your own
+  ask CLICKHOUSE_PASSWORD "ClickHouse 'default' user password" "$CLICKHOUSE_PASSWORD"
+  ask CLICKHOUSE_RO_PASSWORD "ClickHouse 'readonly' user password" "$CLICKHOUSE_RO_PASSWORD"
 fi
 ask CLICKHOUSE_DB "Events database name" stats
 ask MEM_LIMIT_REDIS "Redis memory limit" "$MEM_LIMIT_REDIS"
@@ -142,6 +145,8 @@ cat <<EOF
   Front workers:    $FRONT_SCALE
   Extra services:   ${EXTRA_PROFILES:-none}
 EOF
+[[ "$CLICKHOUSE_LOCAL" == 1 ]] \
+  && echo "  ClickHouse auth:  default / $CLICKHOUSE_PASSWORD   readonly / $CLICKHOUSE_RO_PASSWORD  (save these!)"
 (( DEVTOOLS )) && echo "  Devtools auth:    $DEVTOOLS_LOGIN / $DEVTOOLS_PASSWORD  (save this password!)"
 
 ask_yn "Write .env with these settings?" y || { echo "Aborted, nothing written."; exit 1; }
