@@ -49,7 +49,7 @@ cp .env.example .env    # и отредактировать под хост
 | `init` | каталоги с chown, docker-сети `custom`/`dev`, рендер конфигов, `generated/common.env`, `compose.front.yml` |
 | `render` | только перерендерить конфиги и перегенерировать front-файлы |
 | `gen-front` | только перегенерировать front-воркеры и nginx upstream (после смены `FRONT_SCALE`) |
-| `cert-init` | первичное получение сертификата certbot'ом в standalone-режиме на :80 (nginx ещё не нужен), затем старт nginx+certbot. Повторный запуск с существующим сертификатом просто поднимает nginx+certbot |
+| `cert-init` | letsencrypt: первичное получение сертификата certbot'ом в standalone-режиме на :80, затем старт nginx+certbot (повторный запуск с существующим сертификатом просто поднимает их). custom: ничего не выпускает, стартует nginx с вашим сертификатом |
 | `up [args]` | `docker compose up -d --pull always` + любые аргументы compose (`--profile`, имена сервисов) |
 | `create-db` | ждёт ClickHouse (локальный или внешний — по `CLICKHOUSE_HOST`) и создаёт базы `$CLICKHOUSE_DB` и `stats_ui` (служебная база сервиса ui) |
 | `compose <args>` | сырой `docker compose` с обоими файлами |
@@ -100,11 +100,15 @@ cp .env.example .env    # и отредактировать под хост
 
 | Переменная | Описание |
 |---|---|
-| `SSL_CERT` / `SSL_CERT_KEY` | сертификат для **chproxy** и **caddy**. По умолчанию — `${DATA_DIR}/certbot/conf/live/${DOMAIN}/...`: домен и путь подставляются из переменных выше, править не нужно (только если сертификат лежит в другом месте) |
+| `SSL_MODE` | `letsencrypt` (по умолчанию) — сертификат получает и продлевает certbot; `custom` — используется **уже имеющийся** сертификат, certbot не разворачивается, порт 80 не занимается |
+| `SSL_CERT` / `SSL_CERT_KEY` | файлы сертификата для nginx, chproxy и caddy. В режиме letsencrypt дефолт (`${DATA_DIR}/certbot/conf/live/${DOMAIN}/...`) править не нужно; в режиме `custom` укажите свои пути (fullchain + приватный ключ) |
 | `LETSENCRYPT_STAGING` | `1` = staging CA Let's Encrypt для `cert-init` (тесты без rate-limit) |
 
-Сертификат nginx получается и продлевается автоматически (см. «Nginx и SSL»),
-эти переменные на него не влияют.
+В режиме `custom` preflight требует, чтобы файлы существовали, `cert-init`
+ничего не выпускает (просто стартует nginx), а продление сертификата —
+ваша забота: после замены файлов выполните
+`./deploy.sh compose restart nginx` (и `restart chproxy`/`caddy`, если
+они используются — они монтируют файл напрямую).
 
 ### ClickHouse (локальный или внешний)
 
@@ -210,7 +214,7 @@ env-файлы. Пароли скрипт не генерирует — зада
 | Сервис | Порты | Что это |
 |---|---|---|
 | nginx | 0.0.0.0:443 | публичный вход (только HTTPS), балансировка на front |
-| certbot | 0.0.0.0:80 | выпуск/автопродление сертификата (standalone ACME; слушает 80 только в момент выпуска) |
+| certbot | 0.0.0.0:80 | выпуск/автопродление сертификата (standalone ACME; слушает 80 только в момент выпуска). Только при `SSL_MODE=letsencrypt` |
 | front_1..N | BIND_IP:10003, 10005, … | приём событий |
 | chwriter | — | запись событий в ClickHouse |
 | redis | BIND_IP:6379 | шина/кэш |
@@ -260,11 +264,15 @@ Host-специфичные сниппеты (списки `set_real_ip_from` д
 Порт 80 nginx не занимает — он закреплён за certbot, поэтому
 `http://домен` не отвечает и редиректа на https нет (осознанное решение).
 
-Сертификат: `./deploy.sh cert-init` получает его certbot'ом в standalone-режиме
-(certbot сам поднимает листенер на :80), после чего стартуют nginx и certbot.
-Дальше контейнер `certbot` продлевает сертификат сам (проверка каждые 12ч),
-nginx перечитывает его периодическим reload (каждые 6ч). Для теста:
-`LETSENCRYPT_STAGING=1`.
+Сертификат (`SSL_MODE=letsencrypt`): `./deploy.sh cert-init` получает его
+certbot'ом в standalone-режиме (certbot сам поднимает листенер на :80), после
+чего стартуют nginx и certbot. Дальше контейнер `certbot` продлевает
+сертификат сам (проверка каждые 12ч), nginx перечитывает его периодическим
+reload (каждые 6ч). Для теста: `LETSENCRYPT_STAGING=1`.
+
+Свой сертификат (`SSL_MODE=custom`): укажите файлы в `SSL_CERT`/`SSL_CERT_KEY`
+— certbot не разворачивается, порт 80 остаётся свободен, nginx монтирует файлы
+напрямую. После замены сертификата: `./deploy.sh compose restart nginx`.
 
 ⚠️ chproxy и caddy монтируют файл сертификата напрямую и после продления
 требуют рестарта: `./deploy.sh restart chproxy` (nginx — нет).

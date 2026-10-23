@@ -63,13 +63,15 @@ set +a
 COMPOSE_FILES=(-f docker-compose.yml -f compose.front.yml)
 
 ch_local() { [[ "${CLICKHOUSE_LOCAL:-1}" == "1" ]]; }
+ssl_le()   { [[ "${SSL_MODE:-letsencrypt}" != "custom" ]]; }
 
 # resolve a (possibly relative) dir to an absolute path, creating it
 abs_path() { mkdir -p "$1"; (cd "$1" && pwd); }
 
 compose() {
   local pf=()
-  ch_local && pf=(--profile clickhouse)
+  ch_local && pf+=(--profile clickhouse)
+  ssl_le && pf+=(--profile letsencrypt)
   docker compose "${COMPOSE_FILES[@]}" ${pf[@]+"${pf[@]}"} "$@"
 }
 
@@ -114,14 +116,19 @@ preflight() {
   fi
 
   # a bind-mounted file that does not exist becomes a DIRECTORY at the source,
-  # and caddy/chproxy then crash with "read /cert.pem: is a directory"
+  # and nginx/caddy/chproxy then crash with "read /cert.pem: is a directory"
   for v in SSL_CERT SSL_CERT_KEY; do
     local p="${!v:-}"
     if [[ -n "$p" && -d "$p" ]]; then
       echo " [x] $v=$p is a directory (docker created it in place of a missing file) — remove it, fix the path and recreate the containers"
       fail=1
     elif [[ -n "$p" && ! -f "$p" ]]; then
-      echo " [!] $v=$p — file does not exist (wrong domain in the path?); chproxy/caddy will not start until cert-init creates it"
+      if ssl_le; then
+        echo " [!] $v=$p — file does not exist (wrong domain in the path?); nginx/chproxy/caddy will not start until cert-init creates it"
+      else
+        echo " [x] SSL_MODE=custom, but $v=$p does not exist — point it to your certificate file"
+        fail=1
+      fi
     fi
   done
 
@@ -158,9 +165,9 @@ init_dirs() {
     "$DATA_DIR/jupyter_home/data" "$DATA_DIR/grafana/data"
     "$DATA_DIR/telegraf_config"
     "$DATA_DIR/nginx/conf.d" "$DATA_DIR/nginx/includes"
-    "$DATA_DIR/certbot/conf"
     "$REDIS_DATA_DIR"
   )
+  ssl_le && dirs+=("$DATA_DIR/certbot/conf")
   if ch_local; then
     dirs+=(
       "$DATA_DIR/clickhouse_config" "$DATA_DIR/clickhouse_scripts"
@@ -210,9 +217,17 @@ render_configs() {
   render_tmpl configs/caddy/Caddyfile.tmpl "$DATA_DIR/caddy_home/Caddyfile" \
     '${DOMAIN} ${CADDY_PORT}'
 
+  # in-container certificate paths for nginx, per SSL_MODE
+  if ssl_le; then
+    export NGINX_SSL_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+    export NGINX_SSL_CERT_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+  else
+    export NGINX_SSL_CERT="/etc/ssl/rockstat/cert.pem"
+    export NGINX_SSL_CERT_KEY="/etc/ssl/rockstat/key.pem"
+  fi
   mkdir -p "$DATA_DIR/nginx/conf.d" "$DATA_DIR/nginx/includes"
   render_tmpl configs/nginx/rockstat.conf.tmpl "$DATA_DIR/nginx/conf.d/rockstat.conf" \
-    '${DOMAIN}'
+    '${DOMAIN} ${NGINX_SSL_CERT} ${NGINX_SSL_CERT_KEY}'
   cp -f configs/nginx/includes/*.conf "$DATA_DIR/nginx/includes/" 2>/dev/null || true
 
   # service custom configs (ansible: templates/priv_<group>/*)
@@ -293,6 +308,15 @@ EOF
     for ((i = 1; i <= n; i++)); do
       echo "      - front_${i}"
     done
+    # certificate mounts depend on SSL_MODE, so they live in this
+    # generated file instead of docker-compose.yml
+    echo "    volumes:"
+    if ssl_le; then
+      echo "      - \${DATA_DIR}/certbot/conf:/etc/letsencrypt:ro"
+    else
+      echo "      - \${SSL_CERT}:/etc/ssl/rockstat/cert.pem:ro"
+      echo "      - \${SSL_CERT_KEY}:/etc/ssl/rockstat/key.pem:ro"
+    fi
   } > "$out"
 
   echo "==> Generating nginx upstream for $n front workers"
@@ -310,6 +334,12 @@ EOF
 }
 
 cert_init() {
+  if ! ssl_le; then
+    echo "==> SSL_MODE=custom: using existing certificate ($SSL_CERT), nothing to obtain"
+    compose up -d nginx
+    return
+  fi
+
   local live="$DATA_DIR/certbot/conf/live/$DOMAIN"
   mkdir -p "$DATA_DIR/certbot/conf"
 

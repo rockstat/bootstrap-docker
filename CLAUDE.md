@@ -27,9 +27,12 @@ git-репозиторий внутри него).
   `CLICKHOUSE_HTTP_PORT`, chproxy не разворачивается, а `CH_DSN` в
   common.env собирается напрямую на внешний CH. `create-db` создаёт
   `$CLICKHOUSE_DB` **и** `stats_ui` (служебная база сервиса ui).
-- **SSL**: nginx+certbot, вход через `cert-init` (временный self-signed →
-  webroot ACME → reload; при ошибке dummy восстанавливается). chproxy и caddy
-  монтируют файл сертификата напрямую — после продления нужен их restart.
+- **SSL** (`SSL_MODE`): `letsencrypt` — certbot владеет портом 80 (standalone
+  ACME), `cert-init` выпускает сертификат до старта nginx, продление
+  автоматическое; `custom` — готовые файлы из `SSL_CERT`/`SSL_CERT_KEY`,
+  certbot не разворачивается (профиль `letsencrypt` добавляет deploy.sh).
+  Маунты сертификата nginx генерируются в compose.front.yml по режиму.
+  chproxy и caddy монтируют файл напрямую — после продления нужен их restart.
   `SSL_CERT`/`SSL_CERT_KEY` выводятся из `${DATA_DIR}`/`${DOMAIN}` — обе
   подстановки работают и в compose, и при `source .env` в bash.
 

@@ -54,12 +54,15 @@ services:
     ports:
       - "443:443"
     volumes:
+      # certificate mounts are added by deploy.sh into compose.front.yml
+      # depending on SSL_MODE (letsencrypt dir or custom cert files)
       - ${DATA_DIR}/nginx/conf.d:/etc/nginx/conf.d:ro
       - ${DATA_DIR}/nginx/includes:/etc/nginx/includes:ro
       - ${DATA_DIR}/public:/srv/public:ro
-      - ${DATA_DIR}/certbot/conf:/etc/letsencrypt:ro
 
   certbot:
+    # deployed only with SSL_MODE=letsencrypt (deploy.sh adds the profile)
+    profiles: ["letsencrypt"]
     container_name: certbot
     image: ${IMAGE_CERTBOT}
     restart: unless-stopped
