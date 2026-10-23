@@ -59,6 +59,7 @@ set -a
 # shellcheck disable=SC1091
 source .env
 set +a
+EXTRA_PROFILES=${EXTRA_PROFILES:-}
 
 COMPOSE_FILES=(-f docker-compose.yml -f compose.front.yml)
 
@@ -69,9 +70,11 @@ ssl_le()   { [[ "${SSL_MODE:-letsencrypt}" != "custom" ]]; }
 abs_path() { mkdir -p "$1"; (cd "$1" && pwd); }
 
 compose() {
-  local pf=()
+  local pf=() p
   ch_local && pf+=(--profile clickhouse)
   ssl_le && pf+=(--profile letsencrypt)
+  # permanently enabled optional profiles from .env (comma-separated)
+  for p in ${EXTRA_PROFILES//,/ }; do pf+=(--profile "$p"); done
   docker compose "${COMPOSE_FILES[@]}" ${pf[@]+"${pf[@]}"} "$@"
 }
 

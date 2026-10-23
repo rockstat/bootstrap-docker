@@ -338,7 +338,7 @@ services:
       GF_AUTH_DISABLE_LOGOUT_MENU: "true"
       GF_AUTH_BASIC_ENABLED: "false"
       # must match the caddy basic_auth login (forwarded via X-WEBAUTH-USER)
-      GF_SECURITY_ADMIN_USER: user
+      GF_SECURITY_ADMIN_USER: ${DEVTOOLS_LOGIN:-user}
       CHOWN_HOME: "yes"
     labels:
       caddy2: "https://${DOMAIN}:${CADDY_PORT:-2083}"

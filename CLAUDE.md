@@ -7,7 +7,11 @@ git-репозиторий внутри него).
 
 ## Устройство
 
-- **`deploy.sh` — единственная точка входа**: `setup` (зависимости на чистый
+- **`install.sh`** — интерактивный инсталлятор: вопросы (домен, SSL-режим,
+  локальный/внешний CH с подсказками по RAM/CPU, масштаб front, опциональные
+  сервисы → `EXTRA_PROFILES`, пароль devtools → bcrypt-хэш в Caddyfile.tmpl),
+  пишет `.env` из `.env.example` и запускает шаги deploy.sh.
+- **`deploy.sh` — точка входа для всего остального**: `setup` (зависимости на чистый
   Ubuntu), `preflight`, `init`, `cert-init`, `up`, `create-db`, `render`,
   `gen-front`, `compose <args>` и прокси `down/ps/logs/...`. Перед
   `init`/`up`/`cert-init` автоматически выполняется `preflight`.
