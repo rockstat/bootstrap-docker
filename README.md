@@ -321,3 +321,7 @@ reload (каждые 6ч). Для теста: `LETSENCRYPT_STAGING=1`.
   `./deploy.sh init` (или `render`) после клонирования.
 - **chproxy отдаёт старый сертификат после продления** — он монтирует файл
   напрямую; выполнить `./deploy.sh restart chproxy`.
+
+## Лицензия
+
+[Apache License 2.0](LICENSE).
